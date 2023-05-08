@@ -3,6 +3,7 @@
 # Python version: 3.6
 
 import os
+import os.path
 import wget
 from zipfile import ZipFile
 import matplotlib
@@ -20,20 +21,20 @@ from models.Update import LocalUpdate
 from models.Nets import MobileNetV2
 from models.Fed import FedAvg
 from models.test import test_img
-
+torch.cuda.empty_cache()
 
 if __name__ == '__main__':
     # parse args
     args = args_parser()
     args.device = torch.device('cuda:{}'.format(args.gpu) if torch.cuda.is_available() and args.gpu != -1 else 'cpu')
-
     # load dataset and split users
     if args.dataset == 'imagenet':
         TINY_IMAGENET_ROOT = 'data/tiny-imagenet-200/'
-        url = 'http://cs231n.stanford.edu/tiny-imagenet-200.zip'
-        tiny_imgdataset = wget.download(url, out = os.getcwd())
-        with ZipFile('tiny-imagenet-200.zip', 'r') as zip_ref:
-            zip_ref.extractall('data/')
+        if os.path.exists('tiny-imagenet-200.zip') == False:
+            url = 'http://cs231n.stanford.edu/tiny-imagenet-200.zip'
+            tiny_imgdataset = wget.download(url, out = os.getcwd())
+            with ZipFile('tiny-imagenet-200.zip', 'r') as zip_ref:
+                zip_ref.extractall('data/')
 
 
         # Load ImageNet and normalize
@@ -71,7 +72,7 @@ if __name__ == '__main__':
 
     # build model
     if args.model == 'mobilenet' and args.dataset == 'imagenet':
-        net_glob = MobileNetV2()
+        net_glob = MobileNetV2().to(args.device)
     else:
         exit('Error: unrecognized model')
 
@@ -89,23 +90,22 @@ if __name__ == '__main__':
     best_loss = None
     val_acc_list, net_list = [], []
 
-    if args.all_clients: 
-        print("Aggregation over all clients")
-        w_locals = [w_glob for i in range(args.num_users)]
+    # if args.all_clients: 
+    #     print("Aggregation over all clients")
+    #     w_locals = [w_glob for i in range(args.num_users)]
     
     for iter in tqdm(range(args.epochs)):
-        loss_locals = []
-        if not args.all_clients:
-            w_locals = []
+        loss_locals, w_locals = [], []
+        # if not args.all_clients:
+        #     w_locals = []
+        print(f'\n | Global Training Round: {iter + 1}| \n')
         m = max(int(args.frac * args.num_users), 1)
         idxs_users = np.random.choice(range(args.num_users), m, replace=False)
+        
         for idx in idxs_users:
             local = LocalUpdate(args=args, dataset=dataset_train, idxs=dict_users[idx])
             w, loss = local.train(net=copy.deepcopy(net_glob).to(args.device))
-            if args.all_clients:
-                w_locals[idx] = copy.deepcopy(w)
-            else:
-                w_locals.append(copy.deepcopy(w))
+            w_locals.append(copy.deepcopy(w))
             loss_locals.append(copy.deepcopy(loss))
         # update global weights
         w_glob = FedAvg(w_locals)
@@ -115,14 +115,20 @@ if __name__ == '__main__':
 
         # print loss
         loss_avg = sum(loss_locals) / len(loss_locals)
-        print('Round {:3d}, Average loss {:.3f}'.format(iter, loss_avg))
+        print('Round {:3d}, Average loss {:.3f}\n\n'.format(iter, loss_avg))
         loss_train.append(loss_avg)
+        
+
+        # for c in range(args.num_users):
+        #     local = LocalUpdate(args=args, dataset=dataset_train, idxs=dict_users[idx])
+        #     acc, loss = test_img(net_glob, dataset_test, args)
+        #     list_acc
 
     # plot loss curve
     plt.figure()
     plt.plot(range(len(loss_train)), loss_train)
     plt.ylabel('train_loss')
-    plt.savefig('./save/fed_{}_{}_{}_C{}_iid{}.png'.format(args.dataset, args.model, args.epochs, args.frac, args.iid))
+    plt.savefig('save/fed_{}_{}_{}_C{}_iid{}.png'.format(args.dataset, args.model, args.epochs, args.frac, args.iid))
 
     # testing
     net_glob.eval()
